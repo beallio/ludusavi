@@ -489,17 +489,19 @@ impl Manifest {
     }
 
     /// Readers must never see a partial or mixed file, so publish a complete temporary file by rename.
+    /// The temporary file has a random name and is created exclusively,
+    /// because sandboxed instances (e.g., Flatpak) can share a process ID.
     fn save_cache(cache_path: &StrictPath, cache: &ManifestCache) -> std::io::Result<()> {
-        static TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        use std::io::Write;
 
         let path = cache_path.as_std_path_buf()?;
-        let id = TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let temp = path.with_extension(format!("{}-{id}.tmp", std::process::id()));
-        let result = std::fs::write(&temp, serde_json::to_vec(cache)?).and_then(|()| std::fs::rename(&temp, &path));
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temp);
-        }
-        result
+        let folder = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("manifest cache path has no parent folder"))?;
+        let mut temp = tempfile::NamedTempFile::new_in(folder)?;
+        temp.write_all(&serde_json::to_vec(cache)?)?;
+        temp.persist(&path)?;
+        Ok(())
     }
 
     fn file_name_for(url: &str, primary: bool) -> String {
